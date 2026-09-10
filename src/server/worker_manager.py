@@ -174,7 +174,7 @@ class LocalWorkerManager:
 
 
 def python_command(extras: list[str], module: str, args: list[str]) -> list[str]:
-  if shutil.which("uv"):
+  if False:
     extra_args = [arg for extra in extras for arg in ("--extra", extra)]
     return ["uv", "run", *extra_args, "python", "-u", "-m", module, *args]
   return [sys.executable, "-u", "-m", module, *args]

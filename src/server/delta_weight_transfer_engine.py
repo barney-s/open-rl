@@ -104,7 +104,11 @@ class DeltaSnapshotWeightTransferEngine(WeightTransferEngine):
       getattr(
         self,
         "device",
-        torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu"),
+        (torch.device("tpu") if (
+          __import__("importlib").util.find_spec("torch_tpu") is not None
+        ) else (
+          torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
+        )),
       ),
     )
     self.current_weights_path: str | None = None
@@ -171,10 +175,10 @@ class DeltaSnapshotWeightTransferEngine(WeightTransferEngine):
       start_t = time.perf_counter()
       for name, param in model.named_parameters():
         real_t = self._get_real_tensor(model, name, param)
-        self._cpu_snapshot[name] = real_t.data.cpu().pin_memory() if torch.cuda.is_available() else real_t.data.cpu().clone()
+        self._cpu_snapshot[name] = real_t.data.cpu().pin_memory() if torch.cuda.is_available() and getattr(self, "device", torch.device("cpu")).type != "tpu" else real_t.data.cpu().clone()
       for name, buf in model.named_buffers():
         real_t = self._get_real_tensor(model, name, buf)
-        self._cpu_snapshot[name] = real_t.data.cpu().pin_memory() if torch.cuda.is_available() else real_t.data.cpu().clone()
+        self._cpu_snapshot[name] = real_t.data.cpu().pin_memory() if torch.cuda.is_available() and getattr(self, "device", torch.device("cpu")).type != "tpu" else real_t.data.cpu().clone()
       elapsed = (time.perf_counter() - start_t) * 1000.0
       logger.info(
         f"[DeltaSnapshotEngine] CPU weights snapshot initialized with {len(self._cpu_snapshot)} vLLM tensors from model in {elapsed:.2f} ms."
@@ -209,7 +213,7 @@ class DeltaSnapshotWeightTransferEngine(WeightTransferEngine):
       hf_weights_files = sorted([os.path.join(hf_folder, f) for f in os.listdir(hf_folder) if f.endswith(".safetensors") and "delta" not in f])
       for name, tensor in safetensors_weights_iterator(hf_weights_files, use_tqdm_on_load=False):
         if not name.endswith(".indices") and "delta" not in name:
-          self._cpu_snapshot[name] = tensor.pin_memory() if torch.cuda.is_available() else tensor.clone()
+          self._cpu_snapshot[name] = tensor.pin_memory() if torch.cuda.is_available() and getattr(self, "device", torch.device("cpu")).type != "tpu" else tensor.clone()
       if self._cpu_snapshot:
         elapsed = (time.perf_counter() - start_t) * 1000.0
         logger.info(

@@ -24,7 +24,15 @@ class BaseTrainerWorker:
   def __init__(self):
     self.tokenizer: PreTrainedTokenizerBase | None = None
 
-    if torch.cuda.is_available():
+    try:
+      import torch_tpu
+      has_tpu = True
+    except ImportError:
+      has_tpu = False
+
+    if has_tpu:
+      self.device = torch.device("tpu")
+    elif torch.cuda.is_available():
       self.device = torch.device("cuda")
     elif torch.backends.mps.is_available():
       self.device = torch.device("mps")
