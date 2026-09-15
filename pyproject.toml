@@ -48,6 +48,16 @@ gpu = [
     "torchvision; sys_platform == 'linux'",
     "transformers>=5.5.4",
 ]
+# TPU training via torch_tpu. torch_tpu itself is not on PyPI and must be
+# installed separately (build a wheel from the torch_tpu repo, or use a
+# prebuilt one); it pairs with torch 2.11.0.
+tpu = [
+    "datasets",
+    "numpy",
+    "peft",
+    "torch==2.11.0; sys_platform == 'linux'",
+    "transformers>=5.5.4",
+]
 vllm = [
     "torch; sys_platform == 'linux'",
     "torchaudio; sys_platform == 'linux'",
@@ -95,6 +105,18 @@ conflicts = [
         { extra = "vllm" },
     ],
     [
+        { extra = "tpu" },
+        { extra = "cpu" },
+    ],
+    [
+        { extra = "tpu" },
+        { extra = "gpu" },
+    ],
+    [
+        { extra = "tpu" },
+        { extra = "vllm" },
+    ],
+    [
         { extra = "tpu-sampler" },
         { extra = "cpu" },
     ],
@@ -105,6 +127,10 @@ conflicts = [
     [
         { extra = "tpu-sampler" },
         { extra = "vllm" },
+    ],
+    [
+        { extra = "tpu-sampler" },
+        { extra = "tpu" },
     ],
 ]
 
@@ -132,6 +158,8 @@ explicit = true
 # Pick the torch build from the user-facing cpu/gpu extras; vllm always uses CUDA torch.
 torch = [
     { index = "torch-cpu", extra = "cpu" },
+    # TPU uses the plain CPU torch build; torch_tpu provides the backend.
+    { index = "torch-cpu", extra = "tpu", marker = "sys_platform == 'linux'" },
     { index = "torch-gpu", extra = "gpu", marker = "sys_platform == 'linux'" },
     { index = "torch-gpu", extra = "vllm", marker = "sys_platform == 'linux'" },
 ]

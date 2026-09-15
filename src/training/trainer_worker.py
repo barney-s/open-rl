@@ -24,13 +24,24 @@ class BaseTrainerWorker:
   def __init__(self):
     self.tokenizer: PreTrainedTokenizerBase | None = None
 
-    try:
-      import torch_tpu
-      has_tpu = True
-    except ImportError:
-      has_tpu = False
+    # OPEN_RL_DEVICE picks the device explicitly (a torch_tpu venv can still
+    # run a cpu trainer, e.g. next to a TPU sampler); unset, fall back to
+    # auto-detection, TPU first.
+    device_override = os.environ.get("OPEN_RL_DEVICE")
+    has_tpu = False
+    if device_override in (None, "", "tpu"):
+      # torch_tpu registers the PrivateUse1 "tpu" backend on import; torch
+      # alone does not know the device type. The import also claims the
+      # host's TPU chips, so it must not run when another device was chosen.
+      try:
+        import torch_tpu  # noqa: F401
+        has_tpu = True
+      except ImportError:
+        pass
 
-    if has_tpu:
+    if device_override:
+      self.device = torch.device(device_override)
+    elif has_tpu:
       self.device = torch.device("tpu")
     elif torch.cuda.is_available():
       self.device = torch.device("cuda")

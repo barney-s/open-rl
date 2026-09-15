@@ -57,7 +57,12 @@ class LoraTrainingWorker(BaseTrainerWorker):
     self.tokenizer = AutoTokenizer.from_pretrained(base_model_name)
     dtype = torch.bfloat16 if (torch.cuda.is_available() and torch.cuda.is_bf16_supported()) or getattr(self.device, "type", "") == "tpu" else torch.float32
 
-    self.base_model = AutoModelForCausalLM.from_pretrained(base_model_name, dtype=dtype, device_map=self.device)
+    if self.device.type == "tpu":
+      # accelerate's device_map dispatch does not handle PrivateUse1 devices;
+      # load on CPU and move.
+      self.base_model = AutoModelForCausalLM.from_pretrained(base_model_name, dtype=dtype).to(self.device)
+    else:
+      self.base_model = AutoModelForCausalLM.from_pretrained(base_model_name, dtype=dtype, device_map=self.device)
     print("Successfully loaded.")
     # Validation probe: snapshot base weight addresses to verify adapters share one base copy.
     self._probe_base_ptrs = sorted(p.data_ptr() for _, p in self.base_model.named_parameters())
