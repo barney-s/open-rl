@@ -9,6 +9,7 @@ from pydantic import BaseModel
 from transformers import PreTrainedModel, PreTrainedTokenizerBase
 
 from training import losses
+from training.device import resolve_device
 
 
 class TensorData(BaseModel):
@@ -24,32 +25,9 @@ class BaseTrainerWorker:
   def __init__(self):
     self.tokenizer: PreTrainedTokenizerBase | None = None
 
-    # OPEN_RL_DEVICE picks the device explicitly (a torch_tpu venv can still
-    # run a cpu trainer, e.g. next to a TPU sampler); unset, fall back to
-    # auto-detection, TPU first.
-    device_override = os.environ.get("OPEN_RL_DEVICE")
-    has_tpu = False
-    if device_override in (None, "", "tpu"):
-      # torch_tpu registers the PrivateUse1 "tpu" backend on import; torch
-      # alone does not know the device type. The import also claims the
-      # host's TPU chips, so it must not run when another device was chosen.
-      try:
-        import torch_tpu  # noqa: F401
-        has_tpu = True
-      except ImportError as exc:
-        if device_override == "tpu":
-          print(f"torch_tpu import failed, torch.device('tpu') will not resolve: {exc!r}")
-
-    if device_override:
-      self.device = torch.device(device_override)
-    elif has_tpu:
-      self.device = torch.device("tpu")
-    elif torch.cuda.is_available():
-      self.device = torch.device("cuda")
-    elif torch.backends.mps.is_available():
-      self.device = torch.device("mps")
-    else:
-      self.device = torch.device("cpu")
+    # TPU requires an explicit OPEN_RL_DEVICE=tpu (Dockerfile.tpu sets it);
+    # a torch_tpu venv can still run a cpu trainer, e.g. next to a TPU sampler.
+    self.device = resolve_device()
 
   def forward_backward(self, model: PreTrainedModel, data: list[Datum], loss_fn: str, loss_config: dict | None = None) -> dict[str, Any]:
     """Run a forward/backward pass on model and return Tinker-shaped loss outputs."""
