@@ -64,9 +64,6 @@ class LoraTrainingWorker(BaseTrainerWorker):
     else:
       self.base_model = AutoModelForCausalLM.from_pretrained(base_model_name, dtype=dtype, device_map=self.device)
     print("Successfully loaded.")
-    # Validation probe: snapshot base weight addresses to verify adapters share one base copy.
-    self._probe_base_ptrs = sorted(p.data_ptr() for _, p in self.base_model.named_parameters())
-    print(f"[PROBE] base_load: n_params={len(self._probe_base_ptrs)} base_bytes={sum(p.numel() * p.element_size() for p in self.base_model.parameters())}")
 
   def target_lora_modules(self, config: LoraConfig) -> list[str]:
     assert self.base_model is not None
@@ -154,9 +151,6 @@ class LoraTrainingWorker(BaseTrainerWorker):
 
     self.peft_model.train()
     print(f"LoRA adapter '{adapter_id}' created and set to active.")
-    # Validation probe: base weight addresses must match the load-time snapshot.
-    _base = sorted(p.data_ptr() for _n, p in self.base_model.named_parameters() if ".lora_" not in _n)
-    print(f"[PROBE] adapter {adapter_id}: base_ptrs_unchanged={_base == self._probe_base_ptrs}")
 
     self.save_adapter(adapter_id)
 
