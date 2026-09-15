@@ -36,8 +36,9 @@ class BaseTrainerWorker:
       try:
         import torch_tpu  # noqa: F401
         has_tpu = True
-      except ImportError:
-        pass
+      except ImportError as exc:
+        if device_override == "tpu":
+          print(f"torch_tpu import failed, torch.device('tpu') will not resolve: {exc!r}")
 
     if device_override:
       self.device = torch.device(device_override)

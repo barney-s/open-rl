@@ -289,7 +289,7 @@ def start_backend(config: RunConfig, processes: list[ManagedProcess]) -> str:
     launch(
       processes,
       "accel-timeslicer",
-      ["/home/hodamo_google_com/.venv/bin/python", "-m", "accel_timeslicer.serve"],
+      uv_run(config.uv_extra) + ["python", "-m", "accel_timeslicer.serve"],
       {**base_env(config), "OPEN_RL_ACCEL_TIMESLICER_SOCKET": str(snapshot_socket)},
       log_dir / "accel-timeslicer.log",
       snapshot_socket.is_socket,
