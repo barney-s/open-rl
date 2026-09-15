@@ -55,6 +55,12 @@ vllm = [
     "torch-c-dlpack-ext; sys_platform == 'linux'",
     "vllm==0.25.1; sys_platform == 'linux'",
 ]
+# TPU sampling via tpu-inference. vllm-tpu bundles vllm and tpu_inference at
+# matched versions; its vllm differs from the CUDA extra's pin, hence the
+# conflict declarations below.
+tpu-sampler = [
+    "vllm-tpu>=0.29.0; sys_platform == 'linux'",
+]
 # Kubernetes cluster mode: the k8s API client used to launch FFT worker pods.
 cluster = [
     "kubernetes>=29",
@@ -86,6 +92,18 @@ conflicts = [
     ],
     [
         { extra = "cpu" },
+        { extra = "vllm" },
+    ],
+    [
+        { extra = "tpu-sampler" },
+        { extra = "cpu" },
+    ],
+    [
+        { extra = "tpu-sampler" },
+        { extra = "gpu" },
+    ],
+    [
+        { extra = "tpu-sampler" },
         { extra = "vllm" },
     ],
 ]
