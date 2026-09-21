@@ -2,10 +2,11 @@
 # Ubuntu base, the `tpu` extra instead of `gpu`+`vllm` (they conflict in uv),
 # and no cuda-checkpoint or vLLM patching.
 #
-# torch_tpu is not on PyPI; pass a wheel from the build context:
+# torch_tpu is not on PyPI; the build context must carry a wheel under
+# wheels/ (gitignored; .gcloudignore keeps it in the Cloud Build upload):
 #
-#   DOCKER_BUILDKIT=1 docker build -f src/server/Dockerfile.tpu \
-#     --build-arg TORCH_TPU_WHEEL=wheels/torch_tpu-<version>.whl .
+#   DOCKER_BUILDKIT=1 docker build -f src/server/Dockerfile.tpu .
+#   # or: --build-arg TORCH_TPU_WHEEL=path/to/torch_tpu-<version>.whl
 FROM ubuntu:22.04
 
 ENV PYTHONUNBUFFERED=1 \
@@ -46,7 +47,7 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 # torch_tpu registers the "tpu" PrivateUse1 backend on import. Installed after
 # the sync because it is not in uv.lock; its torch==2.11.0 requirement matches
 # the pin in the tpu extra.
-ARG TORCH_TPU_WHEEL
+ARG TORCH_TPU_WHEEL=wheels/torch_tpu-*.whl
 COPY ${TORCH_TPU_WHEEL} /tmp/torch_tpu/
 RUN uv pip install /tmp/torch_tpu/*.whl && rm -rf /tmp/torch_tpu
 
@@ -60,4 +61,5 @@ ENV PYTHONPATH="/app/src:/app:$PYTHONPATH" \
 
 EXPOSE 8000
 
-CMD ["uv", "run", "uvicorn", "server.gateway:app", "--host", "0.0.0.0", "--port", "8000"]
+# Standing trainer worker; k8s manifests pass --model-id / --active-tenant-set-id.
+CMD ["uv", "run", "python", "-u", "-m", "server.training_requests_processor"]
