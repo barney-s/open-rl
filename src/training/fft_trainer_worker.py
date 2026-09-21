@@ -179,18 +179,21 @@ class FFTTrainingWorker(BaseTrainerWorker):
         "GPU time-slicer lock is not held during save operations."
       )
 
-    if self.weight_sync_cfg.strategy == "delta" and not include_optimizer:
+    # Under the delta strategy save_state writes the sparse delta the sampler
+    # consumes. load_from_state cannot open it, so FFT is not resumable yet.
+    if self.weight_sync_cfg.strategy == "delta":
+      if kind != "sampler":
+        logger.warning("save_state for %s under the delta strategy writes a delta, not a resumable checkpoint", model_id)
       return self.save_state_delta(model_id=model_id, state_path=state_path, kind=kind)
 
+    # FFT cannot be resumed yet, so a saved optimizer has no reader and only
+    # costs disk. include_optimizer is ignored until FFT resume exists.
     os.makedirs(state_path, exist_ok=True)
     was_offloaded = self._prepare_for_save()
     try:
       self.model.save_pretrained(state_path)
       if self.tokenizer is not None:
         self.tokenizer.save_pretrained(state_path)
-
-      if include_optimizer and self.optimizer is not None:
-        torch.save(self.optimizer.state_dict(), os.path.join(state_path, "optimizer.pt"))
     finally:
       self._cleanup_after_save(was_offloaded)
 
@@ -198,7 +201,7 @@ class FFTTrainingWorker(BaseTrainerWorker):
       "base_model": self.base_model_name,
       "created_at": datetime.now().isoformat(),
       "kind": kind,
-      "has_optimizer": include_optimizer and self.optimizer is not None,
+      "has_optimizer": False,
       "model_id": model_id,
       "timestamp": time.time(),
     }
@@ -245,12 +248,15 @@ class FFTTrainingWorker(BaseTrainerWorker):
       indices_list = []
       values_list = []
 
+    # int64 indices: a flat index into a tensor with more than 2**31 elements
+    # (Gemma 4's per-layer embedding table is 2.35e9) does not fit an int32, and
+    # a wrapped negative index made the sampler's index_copy_ assert mid-run.
     if indices_list:
-      indices_flat = torch.cat(indices_list).to(torch.int32).contiguous()
+      indices_flat = torch.cat(indices_list).to(torch.int64).contiguous()
       values_flat = torch.cat(values_list).contiguous()
     else:
       fallback_dtype = next(self.model.parameters()).dtype if self.model else torch.float32
-      indices_flat = torch.empty(0, dtype=torch.int32, device="cpu")
+      indices_flat = torch.empty(0, dtype=torch.int64, device="cpu")
       values_flat = torch.empty(0, dtype=fallback_dtype, device="cpu")
 
     layer_lengths_tensor = torch.tensor(layer_lengths_list, dtype=torch.int64, device="cpu")
@@ -331,9 +337,11 @@ class FFTTrainingWorker(BaseTrainerWorker):
     print(f"Loaded full fine-tuning state from {state_path}")
     return {"model_id": model_id, "base_model": base_model}
 
-  def forward_backward(self, data: list[Datum], loss_fn: str, loss_config: dict | None = None, model_id: str | None = None) -> dict[str, Any]:
+  def forward_backward(
+    self, data: list[Datum], loss_fn: str, loss_config: dict | None = None, model_id: str | None = None, forward_only: bool = False
+  ) -> dict[str, Any]:
     assert self.model is not None, "Model must be loaded first."
-    res = super().forward_backward(self.model, data, loss_fn, loss_config)
+    res = super().forward_backward(self.model, data, loss_fn, loss_config, forward_only=forward_only)
     if torch.cuda.is_available():
       torch.cuda.empty_cache()
     return res
@@ -469,7 +477,7 @@ class FFTTrainingWorker(BaseTrainerWorker):
         diff_mask = param.data.view(-1).ne(prev_gpu.view(-1))
         indices = diff_mask.nonzero(as_tuple=True)[0]
         if indices.numel() > 0:
-          idx_cpu = indices.to(torch.int32).contiguous().cpu()
+          idx_cpu = indices.to(torch.int64).contiguous().cpu()
           val_cpu = param.data.view(-1)[diff_mask].contiguous().cpu()
           layer_names_list.append(name)
           indices_list.append(idx_cpu)
