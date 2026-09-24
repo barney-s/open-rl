@@ -6,6 +6,7 @@ from typing import Any
 
 import torch
 from pydantic import BaseModel
+from torch.utils.checkpoint import checkpoint
 from transformers import PreTrainedModel, PreTrainedTokenizerBase
 
 from training import losses
@@ -25,6 +26,9 @@ class BaseTrainerWorker:
   # Smallest padded sequence length when shape bucketing is on. Compile cost on
   # XLA is near-flat in sequence length, so generous rungs are cheap.
   MIN_LENGTH_BUCKET = 64
+  # Tokens per output-head chunk in compute_target_logprobs. 1024 x a 262k
+  # vocab x fp32 is 1 GiB per live copy.
+  DEFAULT_LOGPROB_CHUNK_TOKENS = 1024
 
   def __init__(self):
     self.tokenizer: PreTrainedTokenizerBase | None = None
@@ -258,10 +262,68 @@ class BaseTrainerWorker:
     attention_mask: torch.Tensor,
     target_token_ids: torch.Tensor,
   ) -> torch.Tensor:
-    """Return selected target logprobs with shape [batch, max_target_len]."""
-    outputs = model(input_ids, attention_mask=attention_mask, use_cache=False, return_dict=True)
-    logits = outputs.logits[:, : target_token_ids.shape[1], :]
-    return torch.nn.functional.log_softmax(logits, dim=-1).gather(dim=-1, index=target_token_ids.unsqueeze(-1)).squeeze(-1)
+    """Return selected target logprobs with shape [batch, max_target_len].
+
+    The full [tokens x vocab] logits are never materialised: the decoder body
+    runs once, then the output head and log_softmax run per chunk of positions
+    under activation checkpointing, so peak memory at the loss is bounded by
+    the chunk size rather than by the token budget.
+    """
+    target_len = target_token_ids.shape[1]
+    parts = self.split_causal_lm(model)
+    if parts is None:
+      outputs = model(input_ids, attention_mask=attention_mask, use_cache=False, return_dict=True)
+      logits = outputs.logits[:, :target_len, :]
+      return torch.nn.functional.log_softmax(logits, dim=-1).gather(dim=-1, index=target_token_ids.unsqueeze(-1)).squeeze(-1)
+
+    body, head, softcap = parts
+    hidden_states = body(input_ids, attention_mask=attention_mask, use_cache=False, return_dict=True).last_hidden_state[:, :target_len, :]
+    positions_per_chunk = max(1, self.logprob_chunk_tokens() // hidden_states.shape[0])
+    chunks = []
+    for start in range(0, target_len, positions_per_chunk):
+      stop = start + positions_per_chunk
+      chunks.append(
+        checkpoint(
+          self.chunk_target_logprobs,
+          head,
+          softcap,
+          hidden_states[:, start:stop, :],
+          target_token_ids[:, start:stop],
+          use_reentrant=False,
+          preserve_rng_state=False,
+        )
+      )
+    return torch.cat(chunks, dim=1)
+
+  @staticmethod
+  def chunk_target_logprobs(head: torch.nn.Module, softcap: float | None, hidden_states: torch.Tensor, target_token_ids: torch.Tensor):
+    logits = head(hidden_states)
+    if softcap:
+      # Gemma's final_logit_softcapping, normally applied by the CausalLM forward.
+      logits = torch.tanh(logits / softcap) * softcap
+    logits = logits.float()
+    return torch.log_softmax(logits, dim=-1).gather(dim=-1, index=target_token_ids.unsqueeze(-1)).squeeze(-1)
+
+  def logprob_chunk_tokens(self) -> int:
+    """Tokens (rows x positions) per output-head chunk; memory at the loss is ~this x vocab x a few bytes."""
+    return int(os.getenv("OPEN_RL_TRAIN_LOGPROB_CHUNK_TOKENS", str(self.DEFAULT_LOGPROB_CHUNK_TOKENS)))
+
+  def split_causal_lm(self, model: Any) -> tuple[torch.nn.Module, torch.nn.Module, float | None] | None:
+    """(decoder body, output head, final logit softcap) of an HF causal LM, or None when the model does not expose them.
+
+    PEFT is unwrapped first: its attribute forwarding would otherwise hand back
+    the whole causal LM (LoRA layers are injected in place, so the body found
+    on the unwrapped model still carries the adapters).
+    """
+    hf_model = model.get_base_model() if hasattr(model, "get_base_model") else model
+    prefix = getattr(hf_model, "base_model_prefix", None)
+    body = getattr(hf_model, prefix, None) if prefix else None
+    head = hf_model.get_output_embeddings() if hasattr(hf_model, "get_output_embeddings") else None
+    if body is None or head is None:
+      return None
+    config = getattr(hf_model, "config", None)
+    text_config = config.get_text_config() if hasattr(config, "get_text_config") else config
+    return body, head, getattr(text_config, "final_logit_softcapping", None)
 
   def generate(
     self,

@@ -32,6 +32,7 @@ configMapGenerator:
       - VLLM_SERVER_DEV_MODE=1
       - VLLM_ALLOW_INSECURE_SERIALIZATION=1
       - OPEN_RL_TRAIN_SHAPE_BUCKETS=1
+      - OPEN_RL_TRAIN_TOKEN_BUDGET=32768
 
 patches:
   - path: scheduler.yaml
