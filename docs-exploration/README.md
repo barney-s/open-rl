@@ -1,10 +1,8 @@
-# Repository Exploration Notes
+# Exploration Notes Index
 
-Living onboarding and architecture documentation for the `open-rl` repository.
+Living repository knowledge base for OpenRL. Freshest documents listed first.
 
-## Index
-
-- [questions.md](questions.md) — Open architectural questions and ambiguities identified in the codebase.
-- [code-map.md](code-map.md) — Directory-by-directory layout, primary entry points, and the 20 most critical files (with risk indicators).
-- [architecture.md](architecture.md) — Component topology, data flow, sequence diagrams, key abstractions, and execution modes.
-- [overview.md](overview.md) — Executive summary of OpenRL: what it does, why it exists, and who it is for.
+- [questions.md](questions.md) — Open architectural questions, code constraints, and observed trade-offs.
+- [code-map.md](code-map.md) — Directory layout, key entry points, 20 critical files, and high-risk modification areas.
+- [architecture.md](architecture.md) — Component architecture, Tinker API request lifecycle, data flow, and key abstractions with Mermaid diagrams.
+- [overview.md](overview.md) — Mission statement, target audience, problem space, and primary operating modes.

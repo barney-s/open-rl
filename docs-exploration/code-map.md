@@ -4,51 +4,56 @@
 
 ```
 open-rl/
-├── src/                      # Core Python packages
-│   ├── server/               # FastAPI server, request queues, session registry, vLLM engine
-│   ├── training/             # PyTorch trainer workers (LoRA / FFT), loss functions, command definitions
-│   └── accel_timeslicer/     # Cooperative GPU time-slicing daemon and client for FFT
-├── scheduler/                # Kubernetes GPU DRA Scheduler (Go controller & CRDs)
-│   ├── controller/           # Controller-runtime manager, placement logic, reconcile loops
-│   ├── api/v1alpha1/         # CRD definitions: Workload, ClaimLedger
-│   └── deploy/               # Kustomize base & overlay manifests for the scheduler
-├── k8s/deploy/               # Deployment manifests (kind, distributed-shared, lustre, lora, fft)
-├── dev/                      # Local dev tooling: kind setup, monitoring, dev CLI
-├── examples/                 # SFT & RL recipes (Pig Latin, Text-to-SQL, Harvey Labs, Autoresearch)
-├── scripts/                  # E2E test runners, VM synchronization, cluster eval scripts
-└── tests/                    # Unit and integration test suite
+├── src/
+│   ├── server/           # FastAPI API server, store backends, proto codec, vLLM engine
+│   ├── training/         # PyTorch trainer workers (LoRA & FFT), commands, loss functions
+│   └── accel_timeslicer/ # Node-local GPU lease coordinator (TCP/Unix socket)
+├── scheduler/
+│   └── controller/       # Go Kubernetes controller for Workload CRDs and DRA placement
+├── k8s/                  # Kustomize base & overlay manifests (kind-dra, gke, lora, fft)
+├── dev/                  # Cluster scripts (kind/GCP), monitoring dashboards, tools
+├── examples/             # Tutorials & recipes (autoresearch, harvey_labs, text-to-sql, SFT)
+├── tests/                # Unit, integration, compatibility, and mock tests
+└── scripts/              # Helper scripts (Tinker proto sync, VM setup, cluster e2e)
 ```
-
-## Top 20 Files That Matter Most
-
-| File | Purpose | Criticality & Danger |
-| --- | --- | --- |
-| `src/server/api_server.py` | Primary FastAPI entry point handling Tinker REST/Protobuf routes and session heartbeats. | ⚠️ **DANGEROUS**: High concurrency surface; bugs in session reaping or async locks can orphan worker pods or leak GPU resources. |
-| `src/server/store.py` | `RequestStore` and `StateStore` implementations for in-memory and Redis backends. | Core queueing contract; changes affect command serialization and future retrieval. |
-| `src/server/session_registry.py` | Tracks active client sessions and maps them to owner runtimes for 30s auto-reaping. | Critical for multi-tenant cleanup; errors risk premature worker termination. |
-| `src/server/worker_manager.py` | Abstract `WorkerManager` protocol and `LocalWorkerManager` for subprocess spawning. | Core worker abstraction decoupling local execution from Kubernetes. |
-| `src/server/scheduler_worker_manager.py` | K8s worker manager creating `Workload` CRDs for the cluster scheduler. | Translates API server worker requests into Kubernetes scheduler CRDs. |
-| `src/server/training_requests_processor.py` | Background loop in trainer workers draining commands from Redis. | Coordinates training lifecycle and time-slicer registration. |
-| `src/server/vllm_sampler.py` | vLLM worker entry point processing generation requests and dynamic weight loading. | Main inference engine; handles sleep/wake states for time-slicing. |
-| `src/server/delta_weight_transfer_engine.py` | Custom vLLM `WeightTransferEngine` applying sparse `.safetensors` CPU deltas to GPU. | ⚠️ **DANGEROUS**: Manipulates raw tensor storage in host/device memory; bugs cause silent weight corruption or GPU crashes. |
-| `src/server/proto_codec.py` | Encoders and decoders for Tinker Protobuf messages (`tinker_public_pb2`). | Wire-format boundary for Tinker protocol compatibility. |
-| `src/server/model_metadata.py` | Pydantic model metadata and weight sync configuration parsers. | Configuration bridge between API server, workers, and env vars. |
-| `src/server/estimator.py` | Peak accelerator memory and tier footprint estimation for models and roles. | Direct input to scheduler placement decisions. |
-| `src/training/trainer_worker.py` | `BaseTrainerWorker` abstract base defining training operations. | Core interface implemented by all post-training backends. |
-| `src/training/lora_trainer_worker.py` | PEFT LoRA training worker managing multi-adapter lifecycles and optimizer states. | ⚠️ **DANGEROUS**: Manages complex PEFT module targeting, tied embeddings, and optimizer state swaps. |
-| `src/training/fft_trainer_worker.py` | Full Fine-Tuning worker managing full model state updates and delta diffs. | Implements full-model backprop and diff calculation against base weights. |
-| `src/training/losses.py` | Loss function implementations (Cross-Entropy, Importance Sampling, etc.). | Mathematical core of RL and SFT objectives. |
-| `src/training/commands.py` | Command dataclasses (`ForwardBackwardCommand`, `OptimStepCommand`, etc.). | Internal wire format between API server and trainer processors. |
-| `src/accel_timeslicer/single_node.py` | Single-node time-slicer server managing mutual exclusion over accelerator access. | ⚠️ **DANGEROUS**: Coordinates GPU locks; deadlocks or lease faults freeze training and sampling. |
-| `src/accel_timeslicer/time_slicer.py` | Client interface and socket transport for registering and leasing GPUs. | Async context manager interface used across worker loops. |
-| `scheduler/controller/internal/controller/workload_controller.go` | Kubernetes controller reconciling `Workload` CRDs and managing DRA claims. | ⚠️ **DANGEROUS**: Manages pod creation and claim binding; race conditions cause GPU double-booking. |
-| `scheduler/controller/internal/placement/placement.go` | Pure placement algorithm computing binpack and spread assignments on DRA claims. | ⚠️ **DANGEROUS**: Core scheduling logic; errors cause unschedulable pods or claim exhaustion. |
 
 ## Entry Points
 
-- **API Server:** `src/server/api_server.py` (`uvicorn server.api_server:app --port 9003`)
-- **Trainer Worker (Standalone/Pod):** `src/server/training_requests_processor.py` (`python -m server.training_requests_processor`)
-- **vLLM Sampler Worker:** `src/server/vllm_sampler.py` (`python -m server.vllm_sampler`)
-- **Accel Time-Slicer Server:** `src/accel_timeslicer/serve.py` (`python -m accel_timeslicer.serve`)
-- **Scheduler Controller Manager:** `scheduler/controller/cmd/manager/main.go`
-- **Developer CLI:** `dev/tools/cli.py` (`make cli ...`)
+- **API Server:** `uvicorn server.api_server:app --host <host> --port <port>` (invoked via `make server` or `Dockerfile.api_server`).
+- **Trainer Worker Daemon:** `python -m server.training_requests_processor` (invoked per model or active tenant set).
+- **vLLM Sampler:** `python -m server.vllm_sampler` (invoked via `make vllm` or `Dockerfile`).
+- **Time-Slicer Daemon:** `python -m accel_timeslicer.serve` (runs as a node-level DaemonSet or local daemon).
+- **K8s Scheduler Controller:** `scheduler/controller/cmd/manager/main.go` (deployed via `scheduler/deploy/`).
+- **CLI / Tools:** `dev/tools/cli.py` (invoked via `make cli <command>`).
+
+## 20 Files That Matter Most
+
+| File | Purpose |
+|---|---|
+| `src/server/api_server.py` | FastAPI application serving Tinker endpoints and managing async long-polling futures. |
+| `src/server/training_requests_processor.py` | Queue consumer loop draining batched tenant commands into trainer instances. |
+| `src/server/store.py` | `RequestStore` (queue + futures) and `StateStore` (metadata) for in-memory and Redis. |
+| `src/server/proto_codec.py` | Zero-copy byte packer converting between Tinker SDK Protobuf messages and internal dicts. |
+| `src/server/worker_manager.py` | Abstract worker manager interface and local process launcher. |
+| `src/server/scheduler_worker_manager.py` | Kubernetes worker manager translating runtime requirements into `Workload` CRDs. |
+| `src/server/delta_weight_transfer_engine.py` | Native vLLM `WeightTransferEngine` implementing in-place CPU snapshot delta updates. |
+| `src/server/vllm_sampler.py` | vLLM sampling daemon handling weight synchronization and generation requests. |
+| `src/server/session_registry.py` | Tinker session heartbeat monitor and idle runtime garbage collector. |
+| `src/server/estimator.py` | Mathematical model memory footprint estimation for DRA GPU device allocations. |
+| `src/training/trainer_worker.py` | Base PyTorch execution worker abstraction handling training loops and checkpointing. |
+| `src/training/lora_trainer_worker.py` | Multi-tenant LoRA execution worker with per-adapter states on a shared base model. |
+| `src/training/fft_trainer_worker.py` | Dedicated Full Fine-Tuning worker managing full-weight backprop and weight diffing. |
+| `src/training/commands.py` | Internal Pydantic command schemas dispatched through the request queue. |
+| `src/accel_timeslicer/single_node.py` | Node-local lease state machine managing active/checkpointed GPU access. |
+| `src/accel_timeslicer/time_slicer.py` | Time-slicer client protocol and IPC socket communication. |
+| `scheduler/controller/internal/placement/placement.go` | Pure scheduling algorithms (binpack vs spread) mapping workloads to DRA resource slices. |
+| `scheduler/controller/internal/controller/workload_controller.go` | Kubernetes controller-runtime reconciler managing Workload and ClaimLedger lifecycles. |
+| `scheduler/controller/api/v1alpha1/workload_types.go` | Go struct definitions for `Workload` and `ClaimLedger` CRDs. |
+| `Makefile` | Root orchestration for testing, building containers, running servers, and rendering manifests. |
+
+## Dangerous Files to Modify
+
+- **`src/server/proto_codec.py`:** Directly unpacks binary buffers using Python's `array` module with strict endianness and typecode assumptions matching upstream Tinker Protobufs. Any subtle field misalignment or incorrect type conversion causes silent payload corruption or failures in Tinker SDK client polling.
+- **`src/server/delta_weight_transfer_engine.py`:** Operates inside vLLM's internal weight loading hooks to perform in-place sparse tensor patching in CPU RAM. Incorrect tensor indexing or safetensors loading logic leads to silent weight corruption during live sampling rollouts.
+- **`scheduler/controller/internal/placement/placement.go`:** Contains concurrency-sensitive capacity arithmetic for GPU memory tiers and claim ledgers. Flaws here cause scheduler race conditions, GPU double-booking, or unschedulable pod deadlocks under high load.
+- **`src/server/session_registry.py` & `src/server/api_server.py` (`owner_locks`):** In-process mutual exclusion locks protect the critical window between session teardown and worker reclamation. Modifications could cause orphaned GPU worker pods or race conditions where active sessions attach to reaped workers.
