@@ -2,6 +2,7 @@
 
 Living repository knowledge base for OpenRL. Freshest documents listed first.
 
+- [runbooks/deploy-rel.md](runbooks/deploy-rel.md) — Executable runbook for deploying the latest official OpenRL release onto a GKE cluster with NVIDIA DRA and Filestore RWX storage.
 - [runbooks/deploy-gke.md](runbooks/deploy-gke.md) — Executable runbook for deploying OpenRL onto GKE Standard with NVIDIA DRA and Filestore RWX storage.
 - [questions.md](questions.md) — Open architectural questions, code constraints, and observed trade-offs.
 - [code-map.md](code-map.md) — Directory layout, key entry points, 20 critical files, and high-risk modification areas.
