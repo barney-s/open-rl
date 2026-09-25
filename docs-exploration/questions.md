@@ -21,3 +21,14 @@ This document captures ambiguities, architectural constraints, and differences b
 
 - **Observation:** `src/server/training_requests_processor.py` strictly raises an error if instantiated with a time slicer without a `REDIS_URL`. Local mode can run entirely with `InMemoryStore`.
 - **Question:** For local testing of time-slicing without Kubernetes, is a local Redis server always mandatory, or is an IPC-shared in-memory queue planned for local multi-process testing?
+
+## 5. Filestore StorageClass Default VPC Network Binding
+
+- **Observation:** In `k8s/deploy/lora/storage.yaml` and `k8s/deploy/distributed-shared/01-shared-pvc.yaml`, the PVC references `standard-rwx`, which relies on GKE's managed `GcpFilestoreCsiDriver` binding implicitly to the GCP `default` VPC network.
+- **Question:** For non-default VPC networks or VPC Service Controls (VPC-SC) perimeters, will parameterized Kustomize overlays provide custom Filestore `StorageClass` manifests (with explicit `parameters.network`)?
+
+## 6. GPU Node Taints vs DRA Driver DaemonSet Tolerations
+
+- **Observation:** Standard GKE GPU node pools often apply `nvidia.com/gpu=present:NoSchedule` or similar taints to reserve GPU nodes. The NVIDIA DRA driver Helm chart and preloaded GPU driver installer daemonsets need matching tolerations to schedule cleanly on dedicated GPU pools.
+- **Question:** Should default Kustomize overlays or Helm values files pin standard tolerations across all runtime DaemonSets (`open-rl-accel-timeslicer`, `snapshot-agent`, `nvidia-dra-driver-gpu`) to avoid manual daemonset patching on tainted pools?
+

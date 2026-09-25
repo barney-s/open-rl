@@ -1,0 +1,164 @@
+# Deploy OpenRL on GKE (DRA + Filestore)
+
+## What this needs
+
+This runbook requires real cloud infrastructure on Google Cloud Platform (GKE Standard cluster with real NVIDIA GPUs, Filestore CSI driver, and node-level DRA drivers).
+
+**Why real infrastructure is forced:**
+- **Dynamic Resource Allocation (DRA):** OpenRL scheduler uses `gpu.nvidia.com` ResourceClaims and requires node-level kubelet plugin sockets and custom ResourceSlices.
+- **Node-level drivers & daemons:** Requires privileged host daemonsets (`nvidia-dra-driver-gpu`, host `/home/kubernetes/bin/nvidia`).
+- **Shared RWX Storage:** Cross-node multi-process weight sharing and cache rely on Google Cloud Filestore (`standard-rwx` StorageClass via GCP Filestore CSI driver).
+
+**Teardown cost:**
+- Runs G2 VMs (`g2-standard-24` with 2x L4 GPUs) and 1TiB Filestore instance. Prompt deletion after verification avoids recurring GPU and storage hourly billing.
+
+### Verified Feasibility Checklist
+
+- [x] GCP IAM permissions for cluster and node pool management (`roles/container.admin`)
+- [x] GCP IAM permissions for Filestore instance creation (`roles/file.editor` / `file.googleapis.com`)
+- [x] GCP IAM service account user permission (`roles/iam.serviceAccountUser`)
+- [x] `gcloud` CLI (Google Cloud SDK 586.0.0+)
+- [x] `kubectl` CLI (v1.35.8+ with built-in Kustomize)
+- [ ] `helm` CLI v3 — ✗ MISSING: `curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash`
+- [ ] `uv` CLI (for running client tests) — ✗ MISSING: `curl -LsSf https://astral.sh/uv/install.sh | sh`
+
+---
+
+## Preconditions
+
+Set instance variables for GCP project, compute location, and unique cluster identifier:
+
+```bash
+export PROJECT_ID="${PROJECT_ID:-$(gcloud config get-value project)}"
+export REGION="${REGION:-us-central1}"
+export ZONE="${ZONE:-us-central1-a}"
+export CLUSTER_NAME="${RESOURCE_PREFIX:-openrl}-gke-dra"
+
+gcloud config set project "${PROJECT_ID}"
+```
+
+---
+
+## Steps
+
+### 1. Enable Required GCP APIs
+
+```bash
+gcloud services enable \
+  compute.googleapis.com \
+  container.googleapis.com \
+  file.googleapis.com
+```
+
+### 2. Create GKE Standard Cluster with Filestore CSI
+
+```bash
+gcloud container clusters create "${CLUSTER_NAME}" \
+  --location="${REGION}" \
+  --node-locations="${ZONE}" \
+  --release-channel=regular \
+  --machine-type=e2-standard-4 \
+  --num-nodes=1 \
+  --disk-size=100 \
+  --addons=GcpFilestoreCsiDriver
+```
+
+### 3. Create GPU DRA Node Pool
+
+```bash
+gcloud container node-pools create gpu-dra \
+  --cluster="${CLUSTER_NAME}" \
+  --location="${REGION}" \
+  --node-locations="${ZONE}" \
+  --machine-type=g2-standard-24 \
+  --accelerator="type=nvidia-l4,count=2,gpu-driver-version=disabled" \
+  --node-labels="openrl.io/enabled=true,openrl.io/trainer=true,openrl.io/sampler=true,gke-no-default-nvidia-gpu-device-plugin=true,nvidia.com/gpu.present=true" \
+  --node-taints="nvidia.com/gpu=present:NoSchedule" \
+  --image-type=COS_CONTAINERD \
+  --num-nodes=1 \
+  --disk-size=200
+```
+
+### 4. Fetch Credentials and Install NVIDIA Drivers
+
+```bash
+gcloud container clusters get-credentials "${CLUSTER_NAME}" --location="${REGION}"
+
+# Install host NVIDIA drivers
+kubectl apply -f https://raw.githubusercontent.com/GoogleCloudPlatform/container-engine-accelerators/master/nvidia-driver-installer/cos/daemonset-preloaded-latest.yaml
+
+# Install NVIDIA DRA GPU driver via Helm
+helm repo add nvidia https://helm.ngc.nvidia.com/nvidia
+helm repo update
+helm install nvidia-dra-driver-gpu nvidia/nvidia-dra-driver-gpu \
+  --version="25.8.0" \
+  --create-namespace \
+  --namespace nvidia-dra-driver-gpu \
+  --set nvidiaDriverRoot="/home/kubernetes/bin/nvidia/"
+```
+
+### 5. Deploy OpenRL Stack
+
+Deploy the OpenRL LoRA DRA overlay with Filestore `standard-rwx` storage class using server-side apply:
+
+```bash
+kubectl apply --server-side -k k8s/deploy/lora
+```
+
+*(Note: For FFT support with kernel-level time-slicing daemons, substitute `k8s/deploy/fft`.)*
+
+---
+
+## Verify
+
+### 1. Verify Storage and Core Pods
+
+```bash
+# Wait for Filestore 1TiB PVC to bind
+kubectl wait --for=jsonpath='{.status.phase}'=Bound pvc/open-rl-shared-pvc -n openrl-system --timeout=5m
+
+# Confirm deployments are rolled out
+kubectl -n openrl-system rollout status deployment/redis-store --timeout=3m
+kubectl -n openrl-system rollout status deployment/open-rl-scheduler --timeout=3m
+kubectl -n openrl-system rollout status deployment/open-rl-api-server --timeout=3m
+
+# Verify DRA resource slices published by NVIDIA driver
+kubectl get resourceslices,resourceclaims -n openrl-system
+```
+
+### 2. Smoke Test the API Server
+
+```bash
+# Port-forward API server in background
+kubectl -n openrl-system port-forward svc/open-rl-api-server-service 8000:8000 &
+PF_PID=$!
+sleep 2
+
+# Probe API endpoints
+curl -s http://127.0.0.1:8000/api/v1/healthz
+curl -s http://127.0.0.1:8000/api/v1/get_server_capabilities
+
+# Terminate port-forward
+kill "${PF_PID}"
+```
+
+### 3. (Optional) Run SFT End-to-End Verification
+
+```bash
+uv --project examples run python examples/tiny/tiny_sft.py \
+  base_model=Qwen/Qwen2.5-0.5B \
+  base_url=http://127.0.0.1:8000 \
+  sample_after_train=true
+```
+
+---
+
+## Teardown
+
+```bash
+# 1. Remove active workloads and claims
+kubectl -n openrl-system delete workloads,resourceclaims --all --ignore-not-found
+
+# 2. Delete the GKE Cluster and associated Filestore storage
+gcloud container clusters delete "${CLUSTER_NAME}" --location="${REGION}" --quiet
+```
