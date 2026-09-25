@@ -2,18 +2,17 @@
 
 ## What this needs
 
-This runbook requires real cloud infrastructure on Google Cloud Platform (GKE Standard cluster with real NVIDIA GPUs, Filestore CSI driver, and node-level DRA drivers).
+Requires real cloud infrastructure on Google Cloud Platform (GKE Standard cluster with NVIDIA GPUs, Filestore CSI driver, and node-level DRA drivers).
 
 **Why real infrastructure is forced:**
 - **Dynamic Resource Allocation (DRA):** OpenRL scheduler uses `gpu.nvidia.com` ResourceClaims and requires node-level kubelet plugin sockets and custom ResourceSlices.
-- **Node-level drivers & daemons:** Requires privileged host daemonsets (`nvidia-dra-driver-gpu`, host `/home/kubernetes/bin/nvidia`).
+- **Node-level drivers:** Requires privileged host daemonsets (`nvidia-dra-driver-gpu`, host `/home/kubernetes/bin/nvidia`).
 - **Shared RWX Storage:** Cross-node multi-process weight sharing and cache rely on Google Cloud Filestore (`standard-rwx` StorageClass via GCP Filestore CSI driver).
 
 **Teardown cost:**
-- Runs G2 VMs (`g2-standard-24` with 2x L4 GPUs) and 1TiB Filestore instance. Prompt deletion after verification avoids recurring GPU and storage hourly billing.
+Runs G2 VMs (`g2-standard-24` with 2x L4 GPUs) and 1TiB Filestore. Prompt deletion after verification avoids recurring GPU and storage hourly billing.
 
 ### Verified Feasibility Checklist
-
 - [x] GCP IAM permissions for cluster and node pool management (`roles/container.admin`)
 - [x] GCP IAM permissions for Filestore instance creation (`roles/file.editor` / `file.googleapis.com`)
 - [x] GCP IAM service account user permission (`roles/iam.serviceAccountUser`)
@@ -22,27 +21,21 @@ This runbook requires real cloud infrastructure on Google Cloud Platform (GKE St
 - [ ] `helm` CLI v3 — ✗ MISSING: `curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash`
 - [ ] `uv` CLI (for running client tests) — ✗ MISSING: `curl -LsSf https://astral.sh/uv/install.sh | sh`
 
----
-
 ## Preconditions
 
-Set instance variables for GCP project, compute location, and unique cluster identifier:
+Set instance parameters for GCP project, location, and unique cluster identifier:
 
 ```bash
 export PROJECT_ID="${PROJECT_ID:-$(gcloud config get-value project)}"
 export REGION="${REGION:-us-central1}"
 export ZONE="${ZONE:-us-central1-a}"
 export CLUSTER_NAME="${RESOURCE_PREFIX:-openrl}-gke-dra"
-
 gcloud config set project "${PROJECT_ID}"
 ```
-
----
 
 ## Steps
 
 ### 1. Enable Required GCP APIs
-
 ```bash
 gcloud services enable \
   compute.googleapis.com \
@@ -51,7 +44,6 @@ gcloud services enable \
 ```
 
 ### 2. Create GKE Standard Cluster with Filestore CSI
-
 ```bash
 gcloud container clusters create "${CLUSTER_NAME}" \
   --location="${REGION}" \
@@ -64,7 +56,6 @@ gcloud container clusters create "${CLUSTER_NAME}" \
 ```
 
 ### 3. Create GPU DRA Node Pool
-
 ```bash
 gcloud container node-pools create gpu-dra \
   --cluster="${CLUSTER_NAME}" \
@@ -80,7 +71,6 @@ gcloud container node-pools create gpu-dra \
 ```
 
 ### 4. Fetch Credentials and Install NVIDIA Drivers
-
 ```bash
 gcloud container clusters get-credentials "${CLUSTER_NAME}" --location="${REGION}"
 
@@ -98,21 +88,15 @@ helm install nvidia-dra-driver-gpu nvidia/nvidia-dra-driver-gpu \
 ```
 
 ### 5. Deploy OpenRL Stack
-
-Deploy the OpenRL LoRA DRA overlay with Filestore `standard-rwx` storage class using server-side apply:
-
+Deploy OpenRL LoRA DRA overlay with Filestore `standard-rwx` storage class via server-side apply:
 ```bash
 kubectl apply --server-side -k k8s/deploy/lora
 ```
-
 *(Note: For FFT support with kernel-level time-slicing daemons, substitute `k8s/deploy/fft`.)*
-
----
 
 ## Verify
 
-### 1. Verify Storage and Core Pods
-
+### 1. Verify Storage, Core Pods, and DRA Slices
 ```bash
 # Wait for Filestore 1TiB PVC to bind
 kubectl wait --for=jsonpath='{.status.phase}'=Bound pvc/open-rl-shared-pvc -n openrl-system --timeout=5m
@@ -126,32 +110,25 @@ kubectl -n openrl-system rollout status deployment/open-rl-api-server --timeout=
 kubectl get resourceslices,resourceclaims -n openrl-system
 ```
 
-### 2. Smoke Test the API Server
-
+### 2. Smoke Test API Server
 ```bash
-# Port-forward API server in background
 kubectl -n openrl-system port-forward svc/open-rl-api-server-service 8000:8000 &
 PF_PID=$!
 sleep 2
 
-# Probe API endpoints
 curl -s http://127.0.0.1:8000/api/v1/healthz
 curl -s http://127.0.0.1:8000/api/v1/get_server_capabilities
 
-# Terminate port-forward
 kill "${PF_PID}"
 ```
 
 ### 3. (Optional) Run SFT End-to-End Verification
-
 ```bash
 uv --project examples run python examples/tiny/tiny_sft.py \
   base_model=Qwen/Qwen2.5-0.5B \
   base_url=http://127.0.0.1:8000 \
   sample_after_train=true
 ```
-
----
 
 ## Teardown
 
