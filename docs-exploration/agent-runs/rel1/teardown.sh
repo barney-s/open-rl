@@ -18,7 +18,11 @@ if gcloud container clusters get-credentials "${CLUSTER_NAME}" --location="${REG
 fi
 
 # Delete the GKE cluster (and any associated Filestore storage provisioned by CSI)
-echo "Deleting GKE cluster ${CLUSTER_NAME}..."
-gcloud container clusters delete "${CLUSTER_NAME}" --location="${REGION}" --quiet
+if gcloud container clusters describe "${CLUSTER_NAME}" --location="${REGION}" >/dev/null 2>&1; then
+  echo "Deleting GKE cluster ${CLUSTER_NAME}..."
+  gcloud container clusters delete "${CLUSTER_NAME}" --location="${REGION}" --quiet
+else
+  echo "GKE cluster ${CLUSTER_NAME} is already deleted."
+fi
 
 echo "=== Teardown completed ==="
